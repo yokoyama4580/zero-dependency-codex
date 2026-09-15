@@ -21,39 +21,63 @@ command -v node >/dev/null 2>&1 || fail "node was not found in PATH."
 # Read and minimally validate the structured run input before creating a workspace.
 CONFIG_VALUES="$({ node - "$CONFIG_FILE" <<'NODE'
 const fs = require('fs');
-const path = process.argv[2];
-const c = JSON.parse(fs.readFileSync(path, 'utf8'));
+const path = require('path');
+
+const configPath = process.argv[2];
+const c = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
 const required = [
   'schema_version',
   'run_id',
   'repository',
   'revision',
-  'target_dependency',
-  'max_repair_iterations',
+  'generated_package_root',
 ];
+
 for (const key of required) {
-  if (!(key in c)) throw new Error(`missing required field: ${key}`);
+  if (!(key in c)) {
+    throw new Error(`missing required field: ${key}`);
+  }
 }
-if (c.schema_version !== '1.0') throw new Error(`unsupported schema_version: ${c.schema_version}`);
-for (const key of ['run_id', 'repository', 'revision', 'target_dependency']) {
+
+if (c.schema_version !== '1.0') {
+  throw new Error(`unsupported schema_version: ${c.schema_version}`);
+}
+
+for (const key of [
+  'run_id',
+  'repository',
+  'revision',
+  'generated_package_root',
+]) {
   if (typeof c[key] !== 'string' || c[key].trim() === '') {
     throw new Error(`${key} must be a non-empty string`);
   }
 }
-if (!Number.isInteger(c.max_repair_iterations) || c.max_repair_iterations < 0) {
-  throw new Error('max_repair_iterations must be an integer >= 0');
+
+const generatedRoot = c.generated_package_root.trim();
+
+if (path.isAbsolute(generatedRoot)) {
+  throw new Error('generated_package_root must be repository-relative');
 }
+
+const normalizedGeneratedRoot = generatedRoot.replace(/\\/g, '/');
+const segments = normalizedGeneratedRoot.split('/');
+
+if (segments.includes('..')) {
+  throw new Error('generated_package_root must not escape the repository with ".."');
+}
+
 process.stdout.write([
-  c.run_id,
-  c.repository,
-  c.revision,
-  c.target_dependency,
-  String(c.max_repair_iterations),
+  c.run_id.trim(),
+  c.repository.trim(),
+  c.revision.trim(),
+  generatedRoot,
 ].join('\t'));
 NODE
 } 2>&1)" || fail "Invalid run-config.json: $CONFIG_VALUES"
 
-IFS=$'\t' read -r RUN_ID REPOSITORY REVISION TARGET_DEPENDENCY MAX_REPAIR_ITERATIONS <<< "$CONFIG_VALUES"
+IFS=$'\t' read -r RUN_ID REPOSITORY REVISION GENERATED_PACKAGE_ROOT <<< "$CONFIG_VALUES"
 
 mkdir -p "$WORKSPACE_ROOT"
 WORKDIR="$WORKSPACE_ROOT/$RUN_ID"
@@ -62,12 +86,11 @@ if [[ -e "$WORKDIR" ]]; then
   fail "Workspace already exists: $WORKDIR. Use a new run_id or remove/archive the previous workspace explicitly."
 fi
 
-echo "[runner] Run ID:            $RUN_ID"
-echo "[runner] Repository:        $REPOSITORY"
-echo "[runner] Revision:          $REVISION"
-echo "[runner] Target dependency: $TARGET_DEPENDENCY"
-echo "[runner] Max repairs:       $MAX_REPAIR_ITERATIONS"
-echo "[runner] Cloning into:      $WORKDIR"
+echo "[runner] Run ID:                 $RUN_ID"
+echo "[runner] Repository:             $REPOSITORY"
+echo "[runner] Revision:               $REVISION"
+echo "[runner] Generated package root: $GENERATED_PACKAGE_ROOT"
+echo "[runner] Cloning into:           $WORKDIR"
 
 git clone "$REPOSITORY" "$WORKDIR"
 git -C "$WORKDIR" checkout --detach "$REVISION"
@@ -93,7 +116,9 @@ cp "$CONFIG_FILE" "$WORKDIR/run-config.json"
 
 RUN_DIR="$WORKDIR/.zero-dependency/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"
+
 cp "$CONFIG_FILE" "$RUN_DIR/run-config.snapshot.json"
+cp "$AGENTS_FILE" "$RUN_DIR/AGENTS.snapshot.md"
 
 {
   echo "runner_started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -101,6 +126,7 @@ cp "$CONFIG_FILE" "$RUN_DIR/run-config.snapshot.json"
   echo "git_version=$(git --version 2>/dev/null || true)"
   echo "node_version=$(node --version 2>/dev/null || true)"
   echo "workspace=$WORKDIR"
+  echo "generated_package_root=$GENERATED_PACKAGE_ROOT"
 } > "$RUN_DIR/runner-metadata.txt"
 
 TRIGGER='Start execution. Read run-config.json and follow AGENTS.md. Use run-config.json as the sole source of run-specific target information. Continue autonomously until the run is complete or the instructions require you to stop.'

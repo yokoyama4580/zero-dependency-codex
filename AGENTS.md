@@ -1,874 +1,606 @@
-# Zero-Dependency Codex Instructions v1.2
+# Zero-Dependency Codex Instructions v1.0
 
-These repository instructions define the Zero-Dependency conversion procedure for Codex. Run Codex from the project root containing this `AGENTS.md` and `run-config.json` so these instructions and the structured execution input are in scope.
+These repository instructions define the fixed rules for Codex to perform Zero-Dependency conversion of JavaScript / TypeScript software.
 
-## 1. Agent Role
-
-You are an Agent that performs Zero-Dependency conversion of external production dependencies in JavaScript / TypeScript software.
-
-Your role is to analyze the actual usage context of the specified target dependency in the target software, identify the behavior required by the target software, and reconstruct only that required behavior as the minimum necessary local implementation.
-
-Then integrate the local implementation into the target software and remove the specified external production dependency.
-
-After dependency removal, validate the result using the target software's build, runtime execution, and existing tests.
-
-If validation fails, analyze the cause and, when necessary, re-analyze or revise the usage context, relevant dependency internals, replacement specification, local implementation, or integration method, then validate again.
-
-Your responsibilities are:
-
-1. Acquire and validate execution input.
-2. Analyze the usage context of the specified dependency in the target software.
-3. Analyze the dependency internals required to implement the used functionality.
-4. Specify a local implementation that reproduces only the required behavior.
-5. Design and generate the local implementation.
-6. Integrate the local implementation into the target software.
-7. Remove the specified external production dependency.
-8. Verify dependency removal.
-9. Validate behavior using build, runtime execution, and existing tests.
-10. Analyze failures, re-analyze, repair, and revalidate when needed.
-11. Record analyses, judgments, modifications, and validation results.
-
-You do not select the target software or the dependency to convert. Those are specified by execution input.
-
-Do not independently Zero-Dependency-convert any dependency other than the specified target dependency.
-
-You do not evaluate the research effectiveness of this method or draw research conclusions. Your role is to perform the Zero-Dependency conversion and objectively record its process and results.
-
-After execution begins, proceed autonomously through analysis, specification, implementation, integration, validation, re-analysis, and repair without requesting step-by-step human decisions in normal cases.
-
-If sufficient information cannot be obtained and an appropriate judgment or implementation cannot be made reasonably, do not continue based only on speculation. Record the uncertainty and its cause and stop.
+Run Codex from the target repository root containing this `AGENTS.md` and `run-config.json`.
 
 ---
 
-## 2. Execution Input
+## 1. Role and Goal
 
-### 2.1 Input Source
+You are an Agent that converts the target software's in-scope external production dependencies to Zero-Dependency local implementations.
 
-Do not infer or obtain run-specific target information from the initial user message. Use `run-config.json` as the sole source of run-specific execution parameters.
+Your goal is:
 
-At the start of execution, use the following file located at the project root that contains this `AGENTS.md` as the structured execution input:
+> Preserve behavior required by the target software while replacing in-scope external third-party production dependencies with local implementations containing only the functionality and processing actually required by the target software.
 
-`run-config.json`
+Do not aim to reimplement complete third-party packages.
 
-Read `run-config.json` before performing Zero-Dependency analysis or production-source modification.
+For direct, optional, and transitive dependencies alike, implement only the functionality and processing necessary for behavior required by the target software.
 
-`run-config.json` specifies the target and execution limits for this run. It does not override the behavioral rules, analysis procedure, prohibitions, or SUCCESS criteria defined in this `AGENTS.md`.
+Proceed autonomously through analysis, specification, implementation, integration, validation, and justified re-analysis or repair.
 
-### 2.2 Required Input Fields
+Do not evaluate the research effectiveness of the method or draw research conclusions.
 
-`run-config.json` must contain all of the following fields:
+---
 
-- `schema_version`
-- `run_id`
-- `repository`
-- `revision`
-- `target_dependency`
-- `max_repair_iterations`
+## 2. Input and Scope
 
-Expected structure:
+### 2.1 `run-config.json`
+
+Use `run-config.json` as the sole source of run-specific execution parameters.
+
+It must contain:
 
 ```json
 {
   "schema_version": "1.0",
   "run_id": "<RUN_ID>",
-  "repository": "<TARGET_REPOSITORY>",
-  "revision": "<TARGET_REVISION>",
-  "target_dependency": "<TARGET_DEPENDENCY>",
-  "max_repair_iterations": 5
+  "repository": "<REPOSITORY>",
+  "revision": "<REVISION>",
+  "generated_package_root": "<RELATIVE_PATH>"
 }
 ```
 
 Field meanings:
 
-- `schema_version`: version of the `run-config.json` schema, not the model, Codex version, or `AGENTS.md` instruction version.
-- `run_id`: unique identifier for this single execution and its artifacts.
-- `repository`: repository containing the target software.
-- `revision`: tag, release version, branch revision, or commit hash to use.
-- `target_dependency`: third-party npm package to Zero-Dependency-convert in this run.
-- `max_repair_iterations`: maximum number of repair iterations allowed in Phase 9. Must be an integer greater than or equal to 0.
+- `schema_version`: schema version of `run-config.json`.
+- `run_id`: unique identifier for this run and its artifacts.
+- `repository`: target Git repository.
+- `revision`: target Git revision.
+- `generated_package_root`: repository-relative root directory for generated Zero-Dependency production code.
 
-### 2.3 Input Validation
+At execution start, verify that:
 
-At execution start, confirm all of the following:
-
-1. `run-config.json` exists.
-2. It parses as valid JSON.
-3. All required fields exist.
-4. All required fields have valid types.
-5. Required string values are non-empty.
-6. `schema_version` is supported.
-7. `run_id` identifies this run.
-8. `repository` identifies the target repository.
-9. `revision` identifies the target revision.
-10. `target_dependency` identifies the target npm package.
-11. `max_repair_iterations` is an integer greater than or equal to 0.
+- `run-config.json` exists and parses as valid JSON,
+- all required fields exist and have valid types,
+- required strings are non-empty,
+- `schema_version` is supported,
+- the current repository matches `repository`,
+- the checked-out revision matches `revision`,
+- `generated_package_root` is a valid repository-relative path.
 
 Do not infer or fabricate missing required values.
 
-If the file is missing, invalid, uses an unsupported schema, omits a required field, or contains invalid values, do not begin Zero-Dependency conversion. Stop with an input error and record the reason.
+If input is invalid, do not modify production code. Record the reason and stop.
 
-### 2.4 Supported Schema
+### 2.2 Production Dependency Scope
 
-These rules support:
+The following are in scope for Zero-Dependency conversion:
 
-`schema_version: "1.0"`
+- packages declared in the target software's `dependencies`,
+- packages declared in the target software's `optionalDependencies`,
+- in-scope runtime transitive dependencies reachable from those packages.
 
-Do not assume compatibility with another schema version. Stop and record an unsupported-schema error.
+The following are out of scope:
 
-### 2.5 Execution Input Rules
+- packages that are present only because they are declared in `peerDependencies`,
+- packages used only through `devDependencies`,
+- dependencies used only for development, testing, linting, formatting, documentation, or other non-production tooling and not part of the in-scope production dependency graph.
 
-Do not independently change values from `run-config.json`, including:
+`optionalDependencies` are in scope.
 
-- schema version
-- run ID
-- target repository
-- target revision
-- target dependency
-- maximum repair iterations
+`peerDependencies` are out of scope as peer dependencies. Do not select a package for conversion solely because it appears in `peerDependencies`.
 
-Do not choose an easier dependency instead of `target_dependency`.
+If the same package is also reachable through an in-scope `dependencies` or `optionalDependencies` path, treat that path as in scope.
 
-Determine the resolved version of the target dependency from the target repository's actual manifest, lockfile, and dependency tree in Phase 0. Do not infer it from `run-config.json`.
+### 2.3 Direct and Transitive Dependencies
 
-Detect and record the actual execution environment in Phase 0.
+A direct production dependency is an in-scope package declared directly in the Baseline target software's `dependencies` or `optionalDependencies`.
 
----
+A transitive production dependency is an in-scope runtime package reached through a direct dependency or another in-scope transitive dependency.
 
-## 3. Zero-Dependency Definition
+Direct and transitive classification defines dependency position and analysis order. It does not define implementation breadth.
 
-For this task, Zero-Dependency conversion means removing the specified third-party npm package as a production dependency and reconstructing only the functionality from that package that the target software actually requires as local code inside the target software.
-
-The target of Zero-Dependency conversion is external dependency on a third-party npm package.
-
-Dependencies between local functions, classes, or modules inside the new local implementation do not need to be removed.
-
-Allowed conceptual structure:
-
-Application
-→ Local Module
-→ Local Helper Function
-
-Replacing the specified dependency with another third-party npm package is not Zero-Dependency conversion.
+For every in-scope dependency, implement only required functionality and processing.
 
 ---
 
-## 4. Core Principles
+## 3. Invariants
 
-Do not aim to reimplement the entire target package.
+The following rules apply throughout the run.
 
-Always follow this principle:
+### 3.1 Required Functionality Only
 
-> Start from functionality actually used by the target software, and analyze and locally implement only the scope required to realize that functionality.
+This is the central rule:
 
-You do not need to reproduce all APIs, options, or internal features exposed by the original package.
+> Locally implement only the functionality and processing necessary to realize behavior required by the target software.
 
-Only behavior confirmed as required in the target software's usage context should be included in the implementation scope.
+Do not implement a package merely because it appears in the dependency graph.
 
-All of the following are mandatory simultaneously:
+Do not reproduce a package's complete API or complete feature set unless all of it is demonstrably required.
 
-- preserve behavior required by the target software,
-- remove the specified external dependency,
-- add no new third-party production dependency as a substitute.
+Do not retain functionality, processing, or code whose necessity cannot be explained from the target software's usage context.
 
-Do not sacrifice one of these requirements to satisfy the others and report SUCCESS.
+### 3.2 No Substitute Third-Party Production Dependency
 
----
-
-## 5. Allowed Implementation
+Do not replace an in-scope dependency with another newly added third-party production dependency.
 
 You may use:
 
-- ECMAScript standard functionality
-- JavaScript / TypeScript
-- Node.js standard APIs
-- standard Web APIs available in the target execution environment
-- new local modules inside the target repository
-- existing local code in the target software
-- necessary import / require changes
-- necessary package configuration changes
-- minimum existing-code changes required for Zero-Dependency conversion
+- ECMAScript standard functionality,
+- Node.js standard APIs,
+- standard Web APIs available in the fixed target runtime,
+- existing local target-software code,
+- generated local code.
 
-The local implementation may use multiple files, functions, classes, or local modules.
+You may use development tools for analysis, implementation, and validation, but the converted production runtime must not gain a new external runtime, tool, service, or third-party production dependency.
 
-Internal dependencies between these local implementation elements are allowed.
+### 3.3 Original Source Use
 
----
+You may inspect original third-party package source code.
 
-## 6. Prohibitions
+When necessary to realize Required Behavior, you may reflect original processing or code into the local implementation.
 
-### 6.1 No New Third-Party Production Dependency
+Code similarity is not itself prohibited.
 
-Do not replace the specified dependency by adding another third-party npm package.
+The criterion is whether the retained functionality, processing, or code is necessary for behavior required by the target software.
 
-### 6.2 No Retention Beyond the Required Scope
-
-You may inspect the original package source code to understand required behavior and the internal processing necessary to realize it.
-
-You may reflect original processing or code into the local implementation when necessary. Identical or similar code is not prohibited merely because it resembles the original.
-
-However, every function, behavior, or code region retained in the local implementation must have an explainable necessity in the target software's usage context.
-
-Do not retain the entire package or functionality/code beyond the required scope, including functionality the target software does not use or processing unnecessary to realize the required behavior.
-
-The criterion is not code similarity. The criterion is:
-
-> Can the necessity of this functionality, processing, or code be explained as required to realize behavior needed by the target software?
-
-### 6.3 No New Production Runtime External Dependency
-
-You may use available development tools, commands, libraries, and analysis techniques for analysis, conversion, and validation, including:
-
-- source search
-- dependency analysis
-- AST analysis
-- static analysis
-- version control
-- diff inspection
-- test execution
-- build execution
-- runtime checks
-- behavior probing
-
-However, the Zero-Dependency result must not introduce a new production-runtime dependency on an external runtime, external command, system tool, external service, or other third-party production component.
-
-### 6.4 Do Not Modify Existing Tests to Force Success
+### 3.4 Existing Tests
 
 Do not modify existing tests for the purpose of making Zero-Dependency conversion pass.
 
-Prohibited actions include:
+This includes, for example:
 
-- deleting test cases
-- skipping tests
-- deleting assertions
-- changing expected values
-- weakening test conditions
-- configuring failures to be ignored
-- deleting test scripts
-- bypassing validation commands
+- deleting or skipping tests,
+- deleting assertions,
+- changing expected values,
+- weakening validation conditions,
+- configuring failures to be ignored,
+- deleting test scripts,
+- bypassing existing validation commands.
 
-If existing tests fail, treat the failure as evidence of a problem in usage analysis, relevant implementation analysis, replacement specification, local implementation, or integration.
+Additional tests and behavior probes may be created for analysis or diagnosis, but they must remain distinct from existing tests and must not replace the formal SUCCESS conditions.
 
-### 6.5 No Unjustified Changes
+### 3.5 Minimal Change
 
-Do not make changes whose necessity for the specified Zero-Dependency conversion or its validation cannot be explained.
+Do not make changes whose necessity for Zero-Dependency conversion or its validation cannot be explained.
 
-Avoid in particular:
+Avoid unrelated refactoring, formatting-only changes, architecture redesign, unrelated dependency updates, and unrelated configuration or source changes.
 
-- unrelated refactoring
-- formatting-only changes
-- naming cleanup
-- architecture redesign
-- unrelated dependency updates
-- unrelated configuration changes
-- unrelated source modifications
+### 3.6 Generated Package Layout
 
-For necessary changes, record why they are required for Zero-Dependency conversion or validation.
+All new Zero-Dependency production code must be created under:
 
-Keep the modification scope as localized as reasonably possible.
+```text
+<generated_package_root>/
+```
+
+For every third-party package that requires local implementation, create a dedicated package-name directory.
+
+Unscoped package:
+
+```text
+<generated_package_root>/
+└── package-name/
+```
+
+Scoped package:
+
+```text
+<generated_package_root>/
+└── @scope/
+    └── package-name/
+```
+
+A package directory may contain multiple files and subdirectories when necessary.
+
+All generated production code associated with that package must remain under that package's dedicated directory.
+
+Do not create a package directory merely because the package exists in the dependency graph.
+
+Existing target source files, manifests, lockfiles, and configuration files may be modified outside `generated_package_root` when necessary for integration and dependency removal.
+
+### 3.7 Uncertainty
+
+Do not implement behavior based only on unsupported assumptions when relevant evidence can reasonably be obtained.
+
+Use source inspection, static analysis, behavior probing, or other justified analysis as needed.
+
+If significant uncertainty remains and a reasonable judgment cannot be made, record the uncertainty and stop instead of forcing SUCCESS.
 
 ---
 
-## 7. Work Phases
+## 4. Dependency Processing Rules
 
-Execute the following phases in order unless Phase 9 explicitly returns execution to an earlier phase.
+### 4.1 Fixed Direct Dependency Order
 
-Phases 0 through 4 are analysis/specification phases.
+The direct dependency roots for the run are fixed from the Baseline target software before production modification begins.
 
-Do not modify the target software's production implementation for Zero-Dependency purposes until Phase 4 is complete.
+Take the union of exact package-name strings declared in:
 
-Temporary scripts, behavior probes, and additional diagnostic tests may be created for analysis, but existing tests must not be modified.
+- `dependencies`,
+- `optionalDependencies`.
 
-### Phase 0: Input and Baseline Identification
+If the same package name appears in both, treat it as one direct root.
 
-#### Purpose
+Sort the resulting package names in ascending lexicographic order by the exact package-name string.
 
-Uniquely identify the target, starting state, and execution environment for this run.
+Record the complete order before modifying production code and keep it fixed for the entire run.
 
-#### Actions
+Do not reorder roots based on implementation difficulty, dependency depth, package size, expected effort, or Agent preference.
 
-Read from `run-config.json`:
+Do not recompute or reorder the root list after the manifest changes.
 
-- schema version
-- run ID
-- target repository
-- target revision
-- target dependency
-- maximum repair iterations
+### 4.2 Top-Down Analysis
 
-If the target repository is not already available in the current experiment workspace, obtain it using the specified repository value. Use a dedicated target working directory under `workspace/` and do not overwrite unrelated existing content.
+For the current direct dependency:
 
-Confirm that the repository and checked-out revision match `run-config.json`.
+1. Identify how the target software uses it.
+2. Identify the behavior actually required from it.
+3. Trace only the package-internal processing necessary to realize that behavior.
+4. When required processing invokes another in-scope package, determine whether behavior from that dependency is necessary.
+5. If necessary, recursively analyze that dependency in the same way.
+6. If not necessary, stop traversal along that dependency path.
 
-Record at least:
+Example:
 
-- target software
-- target version
-- commit hash
-- target dependency
-- resolved target dependency version
-- Node.js version
-- npm version
-- OS
-- architecture
-- package manager
-- module system
-- whether TypeScript is used
-- whether a lockfile exists
-- maximum repair iterations
+```text
+Application
+└── A
+    └── B
+        └── C
+```
 
-Confirm that the specified dependency exists as a production dependency relevant to the target software.
+If A's required behavior needs B, but B's required behavior does not need C, do not locally implement C.
 
-If a lockfile exists, do not update dependency versions unnecessarily during baseline identification.
+### 4.3 Bottom-Up Implementation
 
-#### Completion Condition
+After required dependency behavior has been identified, implement required packages from the deepest required dependency back toward the direct dependency.
 
-The following must be uniquely identified:
+If A, B, and C are all required:
 
-- target software
-- target revision
-- target dependency
-- resolved dependency version
-- execution environment
-- repair iteration limit
+```text
+C
+↓
+B
+↓
+A
+```
 
-### Phase 1: Baseline Validation
+If C is not required:
 
-#### Purpose
+```text
+B
+↓
+A
+```
 
-Confirm that the original target software is in a valid, comparable state before Zero-Dependency conversion.
+Generated packages may depend on other generated packages.
 
-#### Actions
+### 4.4 Shared Transitive Dependencies
 
-Run, where applicable to the project:
+The same transitive package may be required by multiple direct dependency branches.
 
-1. dependency installation
-2. build
-3. runtime execution
-4. existing tests
+Example:
 
-If the project has no build step, record build as N/A.
+```text
+Application
+├── A
+│   └── B
+└── D
+    └── B
+```
 
-If another validation category genuinely does not exist for the project, record it as N/A with the reason.
+Do not assume that local B behavior generated while processing A automatically satisfies D.
 
-#### Baseline Failure
+When processing D, independently analyze what behavior D requires from B.
 
-If baseline failure prevents a meaningful before/after comparison, do not begin Zero-Dependency conversion.
+For the same package name and the same resolved version:
 
-Do not repair a pre-existing baseline failure as part of the Zero-Dependency conversion.
+- if the existing local implementation already satisfies the newly identified Required Behavior, reuse it unchanged,
+- if additional behavior is required, add only the newly required functionality and processing,
+- the final local implementation must contain only the union of behavior actually required by all processed consumers,
+- do not preemptively implement hypothetical or future functionality.
 
-Reasonable retries for transient network or installation failures are allowed.
+The fact that a package was already analyzed or implemented in an earlier branch does not remove the requirement to analyze its necessity and Required Behavior in a later branch.
 
-If a valid baseline still cannot be established, record the reason and stop.
+### 4.5 Multiple Resolved Versions
 
-### Phase 2: Usage Context Analysis
+Do not assume that different resolved versions of the same package are behaviorally interchangeable.
 
-#### Purpose
+Analyze each resolved version in the usage context of the branch that reaches it.
 
-Determine what functionality and behavior the target software actually requires from the specified dependency.
+If multiple resolved versions of the same package exist in the Baseline in-scope dependency graph and local implementation is required for those versions, separate them below the package directory.
 
-Analyze primarily from the target software side.
+Example:
 
-At minimum inspect, when relevant:
+```text
+<generated_package_root>/
+└── package-name/
+    ├── 1.0.0/
+    └── 2.0.0/
+```
 
-- import / require locations
-- imported exports
-- used APIs / functions / methods
-- call sites
-- arguments
-- argument values or value ranges
-- options
-- return values
-- how return values are used
-- surrounding control flow
-- error handling
-- asynchronous behavior
-- callbacks
-- events
-- state
-- side effects
-- module initialization
-- environment variables
-- configuration
-- platform-dependent behavior
-- dynamic property access
-- dynamic import / require
+Scoped package:
 
-Do not merely list API names.
+```text
+<generated_package_root>/
+└── @scope/
+    └── package-name/
+        ├── 1.0.0/
+        └── 2.0.0/
+```
 
-For each relevant usage, be able to explain:
+Treat each resolved version as a distinct local implementation unit.
+
+Do not merge behavior across versions merely because the package name is the same.
+
+If only one resolved version of a package exists in the Baseline in-scope graph, do not create an unnecessary version subdirectory. Place generated files directly under the package's dedicated directory.
+
+---
+
+## 5. Execution Workflow
+
+### Phase 0: Setup, Baseline, and Inventory
+
+Before production modification:
+
+1. Validate `run-config.json`.
+2. Record the target repository, configured revision, actual commit, target software name/version, Node.js version, package manager and version, OS, architecture, module system, TypeScript usage, lockfile, and `generated_package_root`.
+3. Establish the Baseline by running, where applicable:
+   - dependency installation,
+   - build,
+   - runtime or smoke execution,
+   - all existing tests.
+4. Identify the Baseline in-scope production dependency graph, including:
+   - direct `dependencies`,
+   - direct `optionalDependencies`,
+   - in-scope runtime transitive dependencies,
+   - resolved versions,
+   - dependency paths.
+5. Separately identify out-of-scope peer-only and development-only dependencies.
+6. Create and record the fixed direct dependency processing order defined in Section 4.1.
+
+If a pre-existing Baseline failure prevents a meaningful before/after comparison, do not begin production conversion.
+
+Do not repair a pre-existing Baseline defect as part of Zero-Dependency conversion.
+
+### Phase 1: Analyze the Current Direct Dependency Branch
+
+Process direct dependency roots in the fixed Baseline order.
+
+For the current direct dependency, determine the Required Behavior from the target software's actual usage context.
+
+Inspect, when relevant:
+
+- import / require locations,
+- used APIs / functions / methods,
+- call sites,
+- arguments and options,
+- return values and how they are used,
+- errors and exceptions,
+- surrounding control flow,
+- asynchronous behavior,
+- callbacks and events,
+- state and side effects,
+- initialization,
+- environment variables and configuration,
+- platform-dependent behavior,
+- dynamic calls and dynamic import / require.
+
+Do not merely list API names. Be able to explain:
 
 > What behavior does the target software require from this dependency?
 
-### Phase 3: Relevant Implementation Analysis
+Then recursively analyze only the package functionality and transitive dependency behavior necessary to realize that Required Behavior, following Section 4.2.
 
-#### Purpose
+### Phase 2: Replacement Specification
 
-Determine which internal parts of the original dependency are required to realize the behavior identified in Phase 2.
+Before modifying Zero-Dependency production implementation for the current direct dependency branch, record at least:
 
-Do not aim to understand or reproduce the entire package.
+- Required Behavior,
+- Not Required Behavior,
+- packages requiring local implementation,
+- packages determined unnecessary and the reason,
+- required functionality for each package,
+- generated directory for each package,
+- planned generated files and their roles,
+- existing files expected to require modification,
+- required relationships between generated packages,
+- integration method,
+- external dependency removal method,
+- known risks and uncertainty.
 
-Starting from used APIs and required behavior, transitively inspect relevant implementation elements as necessary, including:
+Do not begin production implementation until this specification is complete.
 
-- internal function calls
-- constants
-- local variables
-- module state
-- object state
-- data dependencies
-- control dependencies
-- internal modules
-- relevant third-party dependency behavior
-- initialization logic
-- fallback behavior
-- error paths
-- asynchronous paths
-- callback / event paths
-- platform-specific paths
-- dynamic calls
-- dynamic import / require
-- environment-dependent behavior
+If implementation later requires a materially different approach or undeclared generated production file, update the specification before making that change.
 
-You may directly inspect original dependency source code.
+### Phase 3: Bottom-Up Implementation and Integration
 
-If source inspection is insufficient, behavior probing is allowed.
+Implement required packages bottom-up according to Section 4.3.
 
-For behavior probing, record:
+Follow the generated package layout and multiple-version rules.
 
-- command or execution performed
-- input
-- observed result
-- purpose of the probe
+When a shared package implementation already exists, follow Section 4.4: reuse it when sufficient or extend it only by newly required behavior.
 
-### Phase 4: Replacement Specification
+Then modify, as necessary:
 
-#### Purpose
+- target source imports / requires,
+- generated-package references,
+- package manifest,
+- lockfile,
+- relevant configuration.
 
-Define the specification that the local implementation must satisfy before production code is changed.
+Ensure the target software uses the generated direct-package implementation instead of the external direct dependency.
 
-Define at least:
+Remove in-scope external dependency relationships that are no longer required by the converted branch.
 
-#### Required Behavior
+Do not remove out-of-scope peer or development dependencies merely to reduce dependency count.
 
-- accepted inputs
-- relevant arguments
-- relevant options
-- return values
-- exceptions / errors
-- asynchronous behavior
-- relevant side effects
-- relevant state transitions
-- relevant platform-dependent behavior
+Do not perform unrelated dependency updates.
 
-#### Not Required Behavior
+### Phase 4: Intermediate Validation
 
-Identify functionality or behavior present in the original package but not required in the target software's usage context and therefore excluded from the local implementation.
+After each direct dependency branch is integrated, run, where applicable:
 
-#### Implementation Strategy
+- dependency installation,
+- build,
+- runtime / smoke execution,
+- all existing tests,
+- current in-scope production dependency graph inspection.
 
-Record:
+Do not proceed to the next direct root until validation succeeds or execution stops because of unresolved failure or uncertainty.
 
-- ECMAScript features to use
-- Node.js standard APIs to use
-- existing local code to reuse
-- local modules to create
-- production file paths to create
-- role of each production file
-- reason for each placement
-- existing files to modify
-- dependency removal method
+If a later Baseline direct root no longer has an in-scope external dependency relationship because an earlier conversion eliminated it, analyze and record why it is no longer required and skip it.
 
-#### Risks / Uncertainties
+Do not generate a local implementation merely because the package was present in the original Baseline root list.
 
-Record:
-
-- unresolved issues
-- dynamic behavior concerns
-- environment-dependent behavior concerns
-- behaviors that require particular attention during validation
-
-Do not modify production implementation for Zero-Dependency purposes until this phase is complete.
-
-### Phase 5: Local Implementation
-
-Generate the minimum necessary local implementation that satisfies the Phase 4 Replacement Specification.
-
-It must:
-
-- satisfy Required Behavior
-- avoid unnecessarily implementing Not Required Behavior
-- add no new third-party production dependency
-- run in the detected target environment
-- maintain the interface needed by the target software
-- avoid retaining original package functionality beyond the required scope
-
-If a production file not declared in Phase 4 must be created or modified, update the Replacement Specification first and record the reason.
-
-### Phase 6: Integration and Dependency Removal
-
-Change the target software to use the local implementation instead of the external dependency.
-
-Modify as needed:
-
-- import
-- require
-- local module path
-- package.json
-- lockfile
-- related configuration
-
-Remove the specified target dependency from the target software's production dependency relationship.
-
-Do not Zero-Dependency-convert unspecified dependencies.
-
-Do not perform dependency updates unrelated to removal of the specified target dependency.
-
-### Phase 7: Dependency Verification
-
-Verify at minimum:
-
-1. the target software's production dependency on the specified dependency is removed,
-2. production code no longer directly imports/requires the specified dependency for the replaced functionality,
-3. no new third-party production dependency was added as a substitute,
-4. transitive dependency state is appropriately updated after removal,
-5. the local implementation requires no new external runtime/tool/service in production.
-
-If the same package remains through a separate pre-existing dependency path, record that path and distinguish it from the dependency path removed in this run.
-
-### Phase 8: Behavioral Validation
-
-Run, where applicable:
-
-1. dependency installation
-2. build
-3. runtime execution
-4. existing tests
-
-If no build step exists, record N/A.
-
-Do not modify existing tests.
-
-Clearly distinguish additional diagnostic tests from existing tests.
-
-If the SUCCESS conditions in Section 12 are not satisfied, proceed to Phase 9.
-
-### Phase 9: Repair and Re-analysis
-
-Identify the direct cause of validation failure and return to the phase responsible for the problem.
-
-Procedure:
-
-Failure
-→ Cause Analysis
-→ Cause Hypothesis
-→ Responsible Phase Identification
-→ Re-analysis or Modification
-→ Revalidation
-
-Default return mapping:
-
-- missed Usage Context → Phase 2
-- insufficient Relevant Implementation Analysis → Phase 3
-- incorrect Replacement Specification → Phase 4
-- Local Implementation defect → Phase 5
-- Integration / Dependency Removal defect → Phase 6
-
-When returning to an earlier phase, update that phase's artifacts and record the difference from the previous analysis/specification.
-
-#### Repair Iteration Definition
-
-One repair iteration consists of:
-
-1. observing a Behavioral Validation failure,
-2. analyzing the cause,
-3. identifying the responsible phase,
-4. returning to that phase,
-5. re-analyzing or modifying,
-6. re-running necessary downstream phases,
-7. re-running Behavioral Validation.
-
-#### Repair Limit
-
-Use `run-config.json.max_repair_iterations` as the hard repair limit.
-
-Do not increase it independently.
-
-If the number of repair iterations reaches the configured maximum and SUCCESS is still not achieved, stop further repair, mark the final result as FAILED, and record:
-
-- unresolved failure,
-- last hypothesized cause,
-- last responsible phase.
-
-If `max_repair_iterations` is 0, do not attempt repair after the first failed Phase 8 validation.
+Repeat Phases 1 through 4 until every Baseline direct root has been processed or explicitly skipped with evidence.
 
 ---
 
-## 8. Output Artifacts and File Placement
+## 6. Validation and Repair
 
-Separate generated files into three categories.
+### 6.1 Repair
 
-### 8.1 Zero-Dependency Local Implementation
+If Intermediate Validation or Final Validation fails, identify the cause and return to the responsible stage.
 
-These are production files used by the converted target software.
+Default mapping:
 
-Do not force a universal location.
+- missed target usage → Phase 1,
+- incomplete recursive dependency analysis → Phase 1,
+- incorrect replacement specification → Phase 2,
+- local implementation defect → Phase 3,
+- integration or dependency-removal defect → Phase 3.
 
-Choose a location that fits the target software's existing directory structure, module organization, naming conventions, and import style.
+When returning to an earlier stage, update the relevant artifacts and record what changed.
 
-Declare planned production file paths and placement rationale in Phase 4 before implementation.
+Do not repeat the same failed modification without new evidence or a revised hypothesis.
 
-### 8.2 Analysis and Execution Artifacts
+If reasonable re-analysis cannot resolve the problem, finish as failure or uncertainty instead of forcing SUCCESS.
 
-Keep analysis, specification, execution, and repair records separate from production implementation.
+### 6.2 Final Validation
 
-Default artifact directory:
+After all Baseline direct roots have been processed, validate the complete target software.
 
-`.zero-dependency/runs/<run-id>/`
+Confirm at minimum:
 
-Use `run-config.json.run_id` for `<run-id>`.
+1. no in-scope external third-party production dependency remains through `dependencies`, `optionalDependencies`, or their in-scope runtime transitive paths,
+2. out-of-scope `peerDependencies` and `devDependencies` are not incorrectly treated as failures merely because they remain,
+3. no new third-party production dependency was added as a substitute,
+4. all generated Zero-Dependency production code is under `generated_package_root`,
+5. every third-party package with generated production code has its own dedicated package directory,
+6. no package directory was created when no local implementation was required,
+7. the build succeeds when applicable,
+8. runtime / smoke validation succeeds when applicable,
+9. all existing tests pass.
+
+Record N/A only when a validation category genuinely does not exist or is not applicable, and record the reason.
+
+---
+
+## 7. Artifacts and Reporting
+
+Keep analysis and experiment records separate from generated production implementation.
+
+Use:
+
+```text
+.zero-dependency/runs/<run-id>/
+```
 
 Create at minimum:
 
-- `baseline.md`
-- `usage-analysis.md`
-- `implementation-analysis.md`
-- `replacement-specification.md`
-- `repair-log.md`
-- `execution-report.md`
+```text
+.zero-dependency/
+└── runs/
+    └── <run-id>/
+        ├── baseline.md
+        ├── dependency-inventory.md
+        ├── direct-dependencies/
+        │   └── <direct-package-name>/
+        │       ├── analysis.md
+        │       ├── specification.md
+        │       └── validation.md
+        ├── repair-log.md
+        └── execution-report.md
+```
 
-Create or update artifacts at the end of the corresponding phase rather than generating everything only at the end.
+Create or update artifacts at the corresponding execution stage rather than generating all evidence only at the end.
 
-### 8.3 Temporary Analysis Files
+### `baseline.md`
 
-Temporary files for probing, debugging, or source analysis should normally be placed under:
+Record the Baseline environment and validation results.
 
-`.zero-dependency/runs/<run-id>/tmp/`
-
-Temporary files are not part of the production implementation.
-
-Before finishing, record necessary observations in the artifacts and remove temporary files that are no longer needed.
-
-### 8.4 File Modification Record
-
-Record every created, modified, or deleted file with at least:
-
-- file path
-- action: created / modified / deleted
-- purpose
-- related phase
-- file category
-
-Distinguish:
-
-- production implementation
-- analysis / execution artifact
-- temporary analysis file
-
----
-
-## 9. Uncertainty Handling
-
-When significant uncertainty remains, do not continue based only on speculation.
-
-Record at minimum:
-
-- what cannot be determined
-- why it cannot be determined
-- evidence obtained
-- analysis attempted
-- why execution cannot safely continue
-
-Do not hide uncertainty and report SUCCESS.
-
----
-
-## 10. Additional Tests
-
-You may generate additional tests for diagnosis, behavior probing, or local implementation verification.
-
-Additional tests are not part of the formal SUCCESS criteria.
-
-For each additional test, record:
-
-- purpose
-- tested behavior
-- relation to required behavior
-- result
-
-Clearly distinguish existing tests from additional tests.
-
----
-
-## 11. Human Intervention
-
-If external information, judgment, correction, or instruction is provided during execution, record it as Human Intervention.
+### `dependency-inventory.md`
 
 Record at least:
 
-- intervention point
-- reason
-- information or instruction provided
-- action taken afterward
+- initial in-scope direct dependencies,
+- direct `optionalDependencies`,
+- fixed direct-dependency processing order,
+- in-scope transitive dependencies,
+- resolved versions,
+- dependency paths or graph,
+- out-of-scope peer dependencies,
+- out-of-scope development-only dependencies,
+- final dependency state.
 
-Do not report a fully autonomous run when Human Intervention occurred.
+### Per-direct-dependency `analysis.md`
 
----
+Record at least:
 
-## 12. SUCCESS Conditions
+- Required Behavior,
+- relevant target usage,
+- recursive dependency analysis,
+- required transitive packages,
+- excluded packages and exclusion reasons,
+- additional Required Behavior identified for shared transitive packages.
 
-Report SUCCESS only if all applicable conditions below are satisfied:
+### `specification.md`
 
-1. the target software's specified external production dependency relationship is removed,
-2. no new third-party production dependency is added as a substitute,
-3. functionality required by the target software is replaced by local implementation,
-4. if a build step exists, build succeeds,
-5. the target software is executable,
-6. all existing tests pass.
+Record the Phase 2 replacement specification.
 
-If the project genuinely has no build step, condition 4 is N/A.
+### `validation.md`
 
-Do not report SUCCESS if any applicable condition is not satisfied.
+Record branch-level changes, eliminated dependency paths, and Intermediate Validation results.
 
----
+### `repair-log.md`
 
-## 13. Final Output
+Record validation failures, cause hypotheses, stages revisited, changes made, and revalidation results.
 
-At execution end, create `execution-report.md` containing at least:
+### `execution-report.md`
 
-### Execution Configuration
+At execution end, summarize at least:
 
-- Schema Version
-- Run ID
-- Repository
-- Revision
-- Target dependency
-- Maximum repair iterations
+- execution configuration,
+- target and environment,
+- Baseline,
+- initial dependency graph,
+- fixed direct-dependency processing order,
+- result for each direct dependency branch,
+- generated packages and their Required Functionality,
+- final union of Required Behavior for shared package/version implementations,
+- handling of multiple resolved versions,
+- eliminated dependency paths,
+- repair, uncertainty, and Human Intervention,
+- final dependency graph,
+- created, modified, and deleted files,
+- final result.
 
-### Target
-
-- Software
-- Version
-- Commit
-- Target dependency
-- Resolved dependency version
-
-### Environment
-
-- OS
-- Architecture
-- Node.js
-- npm
-- Package manager
-- Module system
-
-### Baseline
-
-- Installation
-- Build
-- Runtime
-- Existing tests
-
-### Usage Context Analysis
-
-- Used APIs
-- Call sites
-- Arguments / Options
-- Return values
-- Required behavior
-- Relevant environment / platform conditions
-
-### Relevant Implementation Analysis
-
-- Relevant source elements
-- Relevant internal functions
-- Relevant state / constants
-- Relevant internal modules
-- Relevant transitive dependency behavior
-- Excluded functionality
-- Exclusion reasons
-
-### Replacement Specification
-
-- Required behavior
-- Not required behavior
-- Implementation strategy
-- Production files to create
-- Production files to modify
-- Placement rationale
-- Known risks / uncertainties
-
-### Implementation
-
-- Generated local files
-- Implemented behavior
-- Modified files
-- Removed dependency
-- New third-party dependency added
-
-### Dependency Verification
-
-- Target dependency removal
-- Remaining dependency paths
-- New third-party dependencies
-- New production runtime dependencies
-
-### Behavioral Validation
-
-- Installation
-- Build
-- Runtime
-- Existing tests
-- Additional tests
-
-### Repair and Re-analysis
-
-- Maximum repair iterations
-- Repair iterations actually used
-
-For each iteration:
-
-- Observed failure
-- Hypothesized cause
-- Responsible phase
-- Phase returned to
-- Analysis/specification changes
-- Modification
-- Result
-
-### Human Intervention
-
-- Count
-- Details
-
-### File Modification Record
-
-For each file:
-
-- Path
-- Action
-- Purpose
-- Related phase
-- File category
-
-### Final Result
-
-Record the appropriate final state.
-
-If the result is not SUCCESS, record a Failure / Uncertainty Reason.
+If Human Intervention occurs, record the intervention point, reason, information or instruction provided, and action taken afterward.
 
 ---
 
-## 14. Core Principle
+## 8. Final Status
 
-Your purpose is not merely to generate code that makes tests pass.
+The final result must be one of:
 
-Throughout analysis, specification, implementation, integration, validation, and repair, prioritize this principle:
+- `SUCCESS`
+- `FAILED`
+- `STOPPED_DUE_TO_UNCERTAINTY`
 
-> Identify behavior required by the target software from its actual usage context, retain only the scope necessary to realize that behavior as local implementation, and thereby remove the specified external third-party production dependency.
+Report `SUCCESS` only if all of the following are satisfied:
 
-Using or reflecting original package code is not inherently a problem.
+1. all in-scope external production dependency relationships have been removed,
+2. no new third-party production dependency was added as a substitute,
+3. behavior required by the target software is preserved,
+4. all applicable build, runtime, and existing-test validation succeeds,
+5. generated production code follows the package-directory rules defined in this file.
 
-What matters is that the necessity of every retained function, behavior, or code region can be explained from the target software's usage context.
+Do not intentionally retain functionality beyond Required Behavior.
 
-Keep production implementation clearly separated from analysis and experimental artifacts.
+Do not hide significant uncertainty and report SUCCESS.
 
-Do not retain unnecessary functionality or make unjustified changes. Keep analysis, judgment, specification, modification, validation, and re-analysis traceable.
+For `FAILED` or `STOPPED_DUE_TO_UNCERTAINTY`, record the reason in `execution-report.md`.

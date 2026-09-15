@@ -1,8 +1,7 @@
 {
   "schema_version": "1.0",
-  "run_id": "log-symbols_7.0.1_is-unicode-supported_001",
+  "run_id": "log-symbols_7.0.1_001",
   "repository": "https://github.com/sindresorhus/log-symbols.git",
   "revision": "v7.0.1",
-  "target_dependency": "is-unicode-supported",
-  "max_repair_iterations": 5
+  "generated_package_root": "generated-packages"
 }
